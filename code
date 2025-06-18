@@ -1,0 +1,89 @@
+/**
+ * Fetch journal articles from specified Zotero subcollections and write them to a Google Sheet.
+ * 
+ * Instructions:
+ * 1. Replace the placeholder API key and user ID with your Zotero credentials.
+ * 2. Set the parent collection name (must match exactly).
+ * 3. Set the subcollection names you want to include.
+ * 4. Run the script in a Google Sheet using Extensions > Apps Script.
+ * 
+ * Note: Zotero API limits each request to 100 items. This script handles pagination up to 500 items per subcollection.
+ */
+
+function fetchZoteroItems() {
+  const apiKey = 'REPLACE_WITH_YOUR_ZOTERO_API_KEY';       // Example: 'FA43n3KuEdTrN2WYXLSfw5bU'
+  const userId = 'REPLACE_WITH_YOUR_ZOTERO_USER_ID';       // Example: '17296402'
+  const parentCollectionName = '6 Challenges';              // Name of the parent collection
+  const targetSubNames = ["Challenge 1", "Challenge 2", "Challenge 3", "Challenge 4", "Challenge 5", "Challenge 6"];  // Subcollections to include
+
+  const headers = { 'Zotero-API-Key': apiKey };
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  sheet.clear();
+  sheet.appendRow(['Subcollection', 'Index', 'Author', 'Year', 'Title']);
+
+  // Step 1: Get all collections
+  const allCollectionsRes = UrlFetchApp.fetch(`https://api.zotero.org/users/${userId}/collections`, { headers });
+  const allCollections = JSON.parse(allCollectionsRes.getContentText());
+
+  // Step 2: Find parent collection key
+  const parentCollection = allCollections.find(col => col.data.name === parentCollectionName);
+  if (!parentCollection) {
+    sheet.appendRow([`Parent collection "${parentCollectionName}" not found.`]);
+    return;
+  }
+  const parentKey = parentCollection.key;
+
+  // Step 3: Get subcollections under parent
+  const subcollectionsRes = UrlFetchApp.fetch(`https://api.zotero.org/users/${userId}/collections/${parentKey}/collections`, { headers });
+  const subcollections = JSON.parse(subcollectionsRes.getContentText());
+
+  // Step 4: Filter for target subcollection names
+  const filteredSubcollections = subcollections.filter(sub =>
+    targetSubNames.includes(sub.data.name)
+  );
+
+  // Step 5: Sort subcollections numerically by name (e.g., "Challenge 1" to "Challenge 6")
+  filteredSubcollections.sort((a, b) => {
+    const numA = parseInt(a.data.name.match(/\d+/)) || 0;
+    const numB = parseInt(b.data.name.match(/\d+/)) || 0;
+    return numA - numB;
+  });
+
+  // Step 6: Fetch and write articles from each subcollection
+  filteredSubcollections.forEach(sub => {
+    const subKey = sub.key;
+    const subName = sub.data.name;
+    let start = 0;
+    let index = 1;
+    const maxItems = 500;
+    const pageSize = 100;
+
+    while (start < maxItems) {
+      const itemsUrl = `https://api.zotero.org/users/${userId}/collections/${subKey}/items?itemType=journalArticle&limit=${pageSize}&start=${start}&sort=title&sortOrder=asc`;
+      const itemsRes = UrlFetchApp.fetch(itemsUrl, { headers });
+      const items = JSON.parse(itemsRes.getContentText());
+
+      if (items.length === 0) {
+        if (start === 0) {
+          sheet.appendRow([subName, '', '', '', 'No journal articles found']);
+        }
+        break;
+      }
+
+      items.forEach(item => {
+        const data = item.data;
+        const creator = data.creators && data.creators[0];
+        const author = creator
+          ? (creator.firstName || creator.name ? (creator.firstName || '') + ' ' + (creator.lastName || creator.name || '') : 'N/A').trim()
+          : 'N/A';
+        const year = data.date ? data.date.substring(0, 4) : 'N/A';
+        const title = data.title || 'N/A';
+
+        sheet.appendRow([subName, index++, author, year, title]);
+      });
+
+      if (items.length < pageSize) break;
+      start += pageSize;
+    }
+  });
+}
